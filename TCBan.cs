@@ -10,12 +10,14 @@ using Newtonsoft.Json.Linq;
 using Oxide.Core.Libraries.Covalence;
 using Oxide.Core.Plugins;
 using ProtoBuf;
+using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
+using UnityEngine;
 
 namespace Oxide.Plugins
 {
-    [Info("TC Ban", "VisEntities", "1.0.0")]
+    [Info("TC Ban", "VisEntities", "1.1.0")]
     [Description("Bans or kicks players when their cupboard gets destroyed.")]
     public class TCBan : RustPlugin
     {
@@ -46,6 +48,9 @@ namespace Oxide.Plugins
 
             [JsonProperty("Broadcast Punishment")]
             public bool BroadcastPunishment { get; set; }
+
+            [JsonProperty("Delete Owned Entities After Punishment")]
+            public bool DeleteOwnedEntitiesAfterPunishment { get; set; }
         }
 
         protected override void LoadConfig()
@@ -78,6 +83,11 @@ namespace Oxide.Plugins
             if (string.Compare(_config.Version, "1.0.0") < 0)
                 _config = defaultConfig;
 
+            if (string.Compare(_config.Version, "1.1.0") < 0)
+            {
+                _config.DeleteOwnedEntitiesAfterPunishment = defaultConfig.DeleteOwnedEntitiesAfterPunishment;
+            }
+
             PrintWarning("Config update complete! Updated from version " + _config.Version + " to " + Version.ToString());
             _config.Version = Version.ToString();
         }
@@ -88,7 +98,8 @@ namespace Oxide.Plugins
             {
                 Version = Version.ToString(),
                 PunishmentType = PunishmentType.Kick,
-                BroadcastPunishment = true
+                BroadcastPunishment = true,
+                DeleteOwnedEntitiesAfterPunishment = false
             };
         }
 
@@ -104,6 +115,7 @@ namespace Oxide.Plugins
 
         private void Unload()
         {
+            CoroutineUtil.StopAllCoroutines();
             _config = null;
             _plugin = null;
         }
@@ -135,11 +147,13 @@ namespace Oxide.Plugins
             bool doBan = _config.PunishmentType == PunishmentType.Ban;
             bool doKick = _config.PunishmentType == PunishmentType.Kick;
 
+            List<ulong> punishedPlayerIds = new List<ulong>();
+
             foreach (PlayerNameID authEntry in authorizedPlayers)
             {
                 ulong targetId = authEntry.userid;
-
                 BasePlayer maybeOnlinePlayer = FindById(targetId);
+
                 if (maybeOnlinePlayer == null)
                     continue;
 
@@ -160,24 +174,57 @@ namespace Oxide.Plugins
                     string kickReason = lang.GetMessage(Lang.KickReason, this, iPlayer.Id);
                     iPlayer.Kick(kickReason);
                 }
+
+                punishedPlayerIds.Add(targetId);
             }
 
-            string globalMsg = null;
-            if (doBan)
-                globalMsg = lang.GetMessage(Lang.BanBroadcast, this);
-            else if (doKick)
-                globalMsg = lang.GetMessage(Lang.KickBroadcast, this);
-
-            if (!string.IsNullOrEmpty(globalMsg) && _config.BroadcastPunishment)
+            if (_config.BroadcastPunishment)
             {
-                foreach (BasePlayer activePlayer in BasePlayer.activePlayerList)
+                string globalMsg = null;
+                if (doBan)
+                    globalMsg = lang.GetMessage(Lang.BanBroadcast, this);
+                else if (doKick)
+                    globalMsg = lang.GetMessage(Lang.KickBroadcast, this);
+
+                if (!string.IsNullOrEmpty(globalMsg))
                 {
-                    if (activePlayer != null)
+                    foreach (BasePlayer activePlayer in BasePlayer.activePlayerList)
                     {
                         MessagePlayer(activePlayer, globalMsg);
                     }
                 }
             }
+
+            if (_config.DeleteOwnedEntitiesAfterPunishment && punishedPlayerIds.Count > 0)
+            {
+                CoroutineUtil.StartCoroutine("DeleteEntitiesByCoroutine", DeleteEntitiesByCoroutine(punishedPlayerIds));
+            }
+        }
+
+        private IEnumerator DeleteEntitiesByCoroutine(List<ulong> punishedPlayerIds)
+        {
+            var allEntities = BaseNetworkable.serverEntities.ToList();
+
+            int count = 0;
+            foreach (BaseNetworkable networkable in allEntities)
+            {
+                BaseEntity entity = networkable as BaseEntity;
+                if (entity == null)
+                    continue;
+
+                if (punishedPlayerIds.Contains(entity.OwnerID))
+                {
+                    entity.Kill();
+
+                    count++;
+                    if (count % 20 == 0)
+                    {
+                        yield return null;
+                    }
+                }
+            }
+
+            Puts($"Deleted {count} entities owned by punished players.");
         }
 
         #endregion Punishment
@@ -256,6 +303,57 @@ namespace Oxide.Plugins
         }
 
         #endregion Helper Functions
+
+        #region Helper Classes
+
+        public static class CoroutineUtil
+        {
+            private static readonly Dictionary<string, Coroutine> _activeCoroutines = new Dictionary<string, Coroutine>();
+
+            public static Coroutine StartCoroutine(string baseCoroutineName, IEnumerator coroutineFunction, string uniqueSuffix = null)
+            {
+                string coroutineName;
+
+                if (uniqueSuffix != null)
+                    coroutineName = baseCoroutineName + "_" + uniqueSuffix;
+                else
+                    coroutineName = baseCoroutineName;
+
+                StopCoroutine(coroutineName);
+
+                Coroutine coroutine = ServerMgr.Instance.StartCoroutine(coroutineFunction);
+                _activeCoroutines[coroutineName] = coroutine;
+                return coroutine;
+            }
+
+            public static void StopCoroutine(string baseCoroutineName, string uniqueSuffix = null)
+            {
+                string coroutineName;
+
+                if (uniqueSuffix != null)
+                    coroutineName = baseCoroutineName + "_" + uniqueSuffix;
+                else
+                    coroutineName = baseCoroutineName;
+
+                if (_activeCoroutines.TryGetValue(coroutineName, out Coroutine coroutine))
+                {
+                    if (coroutine != null)
+                        ServerMgr.Instance.StopCoroutine(coroutine);
+
+                    _activeCoroutines.Remove(coroutineName);
+                }
+            }
+
+            public static void StopAllCoroutines()
+            {
+                foreach (string coroutineName in _activeCoroutines.Keys.ToArray())
+                {
+                    StopCoroutine(coroutineName);
+                }
+            }
+        }
+
+        #endregion Helper Classes
 
         #region Permissions
 
