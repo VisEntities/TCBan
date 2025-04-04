@@ -17,7 +17,7 @@ using UnityEngine;
 
 namespace Oxide.Plugins
 {
-    [Info("TC Ban", "VisEntities", "1.1.0")]
+    [Info("TC Ban", "VisEntities", "1.2.0")]
     [Description("Bans or kicks players when their cupboard gets destroyed.")]
     public class TCBan : RustPlugin
     {
@@ -51,6 +51,9 @@ namespace Oxide.Plugins
 
             [JsonProperty("Delete Owned Entities After Punishment")]
             public bool DeleteOwnedEntitiesAfterPunishment { get; set; }
+
+            [JsonProperty("Enable Cupboard Friendly Fire")]
+            public bool EnableCupboardFriendlyFire { get; set; }
         }
 
         protected override void LoadConfig()
@@ -88,6 +91,11 @@ namespace Oxide.Plugins
                 _config.DeleteOwnedEntitiesAfterPunishment = defaultConfig.DeleteOwnedEntitiesAfterPunishment;
             }
 
+            if (string.Compare(_config.Version, "1.2.0") < 0)
+            {
+                _config.EnableCupboardFriendlyFire = defaultConfig.EnableCupboardFriendlyFire;
+            }
+
             PrintWarning("Config update complete! Updated from version " + _config.Version + " to " + Version.ToString());
             _config.Version = Version.ToString();
         }
@@ -99,7 +107,8 @@ namespace Oxide.Plugins
                 Version = Version.ToString(),
                 PunishmentType = PunishmentType.Kick,
                 BroadcastPunishment = true,
-                DeleteOwnedEntitiesAfterPunishment = false
+                DeleteOwnedEntitiesAfterPunishment = false,
+                EnableCupboardFriendlyFire = false
             };
         }
 
@@ -126,7 +135,7 @@ namespace Oxide.Plugins
                 return;
 
             BasePlayer attacker = deathInfo.InitiatorPlayer;
-            if (attacker == null || IsNPC(attacker))
+            if (attacker == null || PlayerUtil.IsNPC(attacker))
                 return;
 
             bool attackerIsAuthorized = buildingPrivilege.authorizedPlayers
@@ -135,7 +144,42 @@ namespace Oxide.Plugins
             if (attackerIsAuthorized)
                 return;
 
+            bool ownerStillAuthed = buildingPrivilege.authorizedPlayers
+                .Any(a => a.userid == buildingPrivilege.OwnerID);
+
+            if (!ownerStillAuthed)
+                return;
+
             PunishAuthorizedPlayers(buildingPrivilege.authorizedPlayers);
+        }
+
+        private void OnEntityTakeDamage(BuildingPrivlidge buildingPrivilege, HitInfo hitInfo)
+        {
+            if (!_config.EnableCupboardFriendlyFire)
+                return;
+
+            if (buildingPrivilege == null || hitInfo == null)
+                return;
+
+            BasePlayer attacker = hitInfo.InitiatorPlayer;
+            if (attacker == null || PlayerUtil.IsNPC(attacker))
+                return;
+
+            ulong attackerId = attacker.userID;
+            ulong ownerId = buildingPrivilege.OwnerID;
+
+            if (attackerId == ownerId)
+            {
+                hitInfo.damageTypes.Clear();
+                MessagePlayer(attacker, Lang.FriendlyFireBlocked);
+                return;
+            }
+
+            if (PlayerUtil.AreTeammates(attackerId, ownerId))
+            {
+                hitInfo.damageTypes.Clear();
+                MessagePlayer(attacker, Lang.FriendlyFireBlocked);
+            }
         }
 
         #endregion Oxide Hooks
@@ -152,7 +196,7 @@ namespace Oxide.Plugins
             foreach (PlayerNameID authEntry in authorizedPlayers)
             {
                 ulong targetId = authEntry.userid;
-                BasePlayer maybeOnlinePlayer = FindById(targetId);
+                BasePlayer maybeOnlinePlayer = PlayerUtil.FindById(targetId);
 
                 if (maybeOnlinePlayer == null)
                     continue;
@@ -284,16 +328,6 @@ namespace Oxide.Plugins
 
         #region Helper Functions
 
-        public static BasePlayer FindById(ulong playerId)
-        {
-            return RelationshipManager.FindByID(playerId);
-        }
-
-        public static bool IsNPC(BasePlayer player)
-        {
-            return player.IsNpc || !player.userID.IsSteamId();
-        }
-
         public static bool PluginLoaded(Plugin plugin)
         {
             if (plugin != null && plugin.IsLoaded)
@@ -305,6 +339,36 @@ namespace Oxide.Plugins
         #endregion Helper Functions
 
         #region Helper Classes
+
+        public static class PlayerUtil
+        {
+            public static BasePlayer FindById(ulong playerId)
+            {
+                return RelationshipManager.FindByID(playerId);
+            }
+
+            public static bool IsNPC(BasePlayer player)
+            {
+                return player.IsNpc || !player.userID.IsSteamId();
+            }
+
+            public static RelationshipManager.PlayerTeam GetTeam(ulong playerId)
+            {
+                if (RelationshipManager.ServerInstance == null)
+                    return null;
+
+                return RelationshipManager.ServerInstance.FindPlayersTeam(playerId);
+            }
+
+            public static bool AreTeammates(ulong firstPlayerId, ulong secondPlayerId)
+            {
+                var team = GetTeam(firstPlayerId);
+                if (team != null && team.members.Contains(secondPlayerId))
+                    return true;
+
+                return false;
+            }
+        }
 
         public static class CoroutineUtil
         {
@@ -389,6 +453,7 @@ namespace Oxide.Plugins
             public const string KickReason = "KickReason";
             public const string BanBroadcast = "BanBroadcast";
             public const string KickBroadcast = "KickBroadcast";
+            public const string FriendlyFireBlocked = "FriendlyFireBlocked";
         }
 
         protected override void LoadDefaultMessages()
@@ -399,6 +464,7 @@ namespace Oxide.Plugins
                 [Lang.KickReason] = "You were kicked because your tool cupboard was destroyed by an outsider.",
                 [Lang.BanBroadcast] = "All players authorized on the destroyed tool cupboard have been smacked with a BAN!",
                 [Lang.KickBroadcast] = "All players authorized on the destroyed tool cupboard got KICKED off the server!",
+                [Lang.FriendlyFireBlocked] = "You cannot damage your own (or your team's) cupboard!"
 
             }, this, "en");
         }
