@@ -17,7 +17,7 @@ using UnityEngine;
 
 namespace Oxide.Plugins
 {
-    [Info("TC Ban", "VisEntities", "1.2.0")]
+    [Info("TC Ban", "VisEntities", "1.2.1")]
     [Description("Bans or kicks players when their cupboard gets destroyed.")]
     public class TCBan : RustPlugin
     {
@@ -52,8 +52,8 @@ namespace Oxide.Plugins
             [JsonProperty("Delete Owned Entities After Punishment")]
             public bool DeleteOwnedEntitiesAfterPunishment { get; set; }
 
-            [JsonProperty("Enable Cupboard Friendly Fire")]
-            public bool EnableCupboardFriendlyFire { get; set; }
+            [JsonProperty("Block Friendly Fire On Cupboards")]
+            public bool BlockFriendlyFireOnCupboards { get; set; }
         }
 
         protected override void LoadConfig()
@@ -93,7 +93,7 @@ namespace Oxide.Plugins
 
             if (string.Compare(_config.Version, "1.2.0") < 0)
             {
-                _config.EnableCupboardFriendlyFire = defaultConfig.EnableCupboardFriendlyFire;
+                _config.BlockFriendlyFireOnCupboards = defaultConfig.BlockFriendlyFireOnCupboards;
             }
 
             PrintWarning("Config update complete! Updated from version " + _config.Version + " to " + Version.ToString());
@@ -108,7 +108,7 @@ namespace Oxide.Plugins
                 PunishmentType = PunishmentType.Kick,
                 BroadcastPunishment = true,
                 DeleteOwnedEntitiesAfterPunishment = false,
-                EnableCupboardFriendlyFire = false
+                BlockFriendlyFireOnCupboards = false
             };
         }
 
@@ -155,7 +155,7 @@ namespace Oxide.Plugins
 
         private void OnEntityTakeDamage(BuildingPrivlidge buildingPrivilege, HitInfo hitInfo)
         {
-            if (!_config.EnableCupboardFriendlyFire)
+            if (!_config.BlockFriendlyFireOnCupboards)
                 return;
 
             if (buildingPrivilege == null || hitInfo == null)
@@ -165,17 +165,10 @@ namespace Oxide.Plugins
             if (attacker == null || PlayerUtil.IsNPC(attacker))
                 return;
 
-            ulong attackerId = attacker.userID;
-            ulong ownerId = buildingPrivilege.OwnerID;
+            bool attackerIsAuthorized = buildingPrivilege.authorizedPlayers
+                .Any(a => a.userid == attacker.userID);
 
-            if (attackerId == ownerId)
-            {
-                hitInfo.damageTypes.Clear();
-                MessagePlayer(attacker, Lang.FriendlyFireBlocked);
-                return;
-            }
-
-            if (PlayerUtil.AreTeammates(attackerId, ownerId))
+            if (attackerIsAuthorized)
             {
                 hitInfo.damageTypes.Clear();
                 MessagePlayer(attacker, Lang.FriendlyFireBlocked);
